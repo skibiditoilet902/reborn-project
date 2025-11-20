@@ -39,17 +39,31 @@ import { getGTribe } from "./sanctuary/GTribe";
 let command = "";
 let lastMessage = "";
 
-// stop [reasob] [seconds]
+// --- Helper Functions to reduce repetition ---
+function getSafeGame() {
+  return getGame();
+}
+
+function resolvePlayerList(selector: any, source: Player | undefined, includeSource: boolean = true): Player[] {
+  const result = playerSelector(selector, source, includeSource);
+  if (!result) return [];
+  if (result instanceof Player) return [result];
+  return result; // Is already an array
+}
+
+// --- Commands ---
+
+// stop [reason] [seconds]
 Command(
   "stop",
   (args: any[], source: Player | undefined) => {
     let timeout = Number(args[args.length - 1]) ? Number(args.pop()) : 10;
     let message = args.slice(1).join(" ");
-
     getGame()?.close(message, timeout || 0);
   },
   { aliases: ["close", "exit"], level: AdminLevel.Staff }
 );
+
 // cancelclose
 Command(
   "cancelclose",
@@ -58,286 +72,242 @@ Command(
   },
   { aliases: ["stopclose", "cclose"], level: AdminLevel.Admin }
 );
+
 // broadcast [message]
 Command(
   "broadcast",
   (args: any[]) => {
     let message = args.slice(1).join(" ");
-    if (!message) return "No message.";
-    let game = getGame();
-
-    if (game) {
+    if (!message) return "No message provided.";
+    if (getGame()) {
       Broadcast(message, undefined);
       return false;
     }
   },
   { aliases: ["bc", "send", "echo"], level: AdminLevel.Helper }
 );
+
 // kill [playerSelector]
 Command(
   "kill",
   (args: any[], source: Player | undefined) => {
-    let game = getGame();
+    let game = getSafeGame();
+    if (!game) return;
 
-    if (game) {
-      let player = playerSelector(args[1], source);
-      if (!player) return "Invalid Player ID";
+    let targets = resolvePlayerList(args[1], source);
+    if (targets.length === 0) return "Invalid Player ID";
 
-      if (player instanceof Player)
-        compareAdmin(source, player) && game.killPlayer(player);
-      else
-        player.forEach((p) => {
-          if (compareAdmin(source, p)) game?.killPlayer(p);
-        });
-    }
+    targets.forEach((p) => {
+      if (compareAdmin(source, p)) game?.killPlayer(p);
+    });
   },
   { aliases: ["k"], level: AdminLevel.Moderator }
 );
+
 // ip [playerSelector]
-// smh this command is for debugging
 Command(
   "ip",
   (args: any[], source: Player | undefined) => {
-    let game = getGame();
-
-    if (game) {
-      let player = playerSelector(args[1], source, false);
-      if (!player) return "Invalid Player ID";
-      return (player as Player).client?.ip;
-    }
+    let player = playerSelector(args[1], source, false);
+    if (!player || !(player instanceof Player)) return "Invalid Player ID";
+    return player.client?.ip || "No IP found";
   },
   { aliases: [], level: AdminLevel.Meow }
 );
+
 // tp [playerSelector] <playerSelector>
 Command(
   "tp",
   (args: any[], source: Player) => {
-    let thisPlayer = source;
-    let game = getGame();
+    let game = getSafeGame();
+    if (!game) return;
 
-    if (game) {
-      let player = playerSelector(args[1], source);
-      let otherPlayer = playerSelector(args[2], source, false);
-      if (!player) return "Invalid Player ID";
+    let target1 = playerSelector(args[1], source);
+    let target2 = playerSelector(args[2], source, false);
 
-      if (player instanceof Player) {
-        if (otherPlayer && otherPlayer instanceof Player) {
-          player.location = otherPlayer.location.add(0, 0, true);
-          game.sendGameObjects(player);
-          return false;
-        } else {
-          if (!source) return "You need to be in the game to run this command!";
-          thisPlayer.location = player.location.add(0, 0, true);
-          game.sendGameObjects(thisPlayer);
-          return false;
-        }
+    if (!target1) return "Invalid Player ID";
+
+    // Helper to move p1 to p2
+    const teleport = (p1: Player, p2: Player) => {
+      p1.location = p2.location.add(0, 0, true);
+      game?.sendGameObjects(p1);
+    };
+
+    if (target1 instanceof Player) {
+      // Case: tp <me> <them> OR tp <them>
+      if (target2 && target2 instanceof Player) {
+        teleport(target1, target2);
       } else {
-        if (!otherPlayer || !(otherPlayer instanceof Player))
-          return "You must provide a second player!";
-        player.forEach((p) => {
-          if (!game || !(otherPlayer instanceof Player)) return;
-          p.location = otherPlayer.location.add(0, 0, true);
-          game.sendGameObjects(p);
-        });
-        return false;
+        if (!source) return "You need to be in-game to teleport to someone.";
+        teleport(source, target1);
       }
+    } else {
+      // Case: tp <all/selector> <dest>
+      if (!target2 || !(target2 instanceof Player)) return "You must provide a destination player!";
+      target1.forEach((p) => teleport(p, target2 as Player));
     }
+    return false;
   },
   { aliases: ["teleport"], level: AdminLevel.Helper }
 );
+
 // invisible <playerSelector>
 Command(
   "invisible",
   (args: any[], source: Player | undefined) => {
-    let game = getGame();
+    let game = getSafeGame();
+    if (!game) return;
 
-    if (game) {
-      let player = playerSelector(args[1], source) || source;
-      if (!player) return "You need to be in the game to run this command.";
+    let targets = resolvePlayerList(args[1], source);
+    if (targets.length === 0 && source) targets = [source];
+    if (targets.length === 0) return "Player not found.";
 
-      if (game) {
-        let bool = boolSelector(args[2]);
-        let bool1 = boolSelector(args[1]);
-        if (player == source) {
-          player.invisible = bool1 == null ? !player.invisible : bool1;
-          player.hideLeaderboard = player.invisible;
-        } else if (player instanceof Player) {
-          if (!compareAdmin(source, player)) return;
-          player.invisible = bool == null ? !player.invisible : bool;
-          player.hideLeaderboard = player.invisible;
-        } else if (player.length) {
-          player.forEach((p) => {
-            if (!compareAdmin(source, p)) return;
-            p.invisible = bool == null ? !p.invisible : bool;
-            p.hideLeaderboard = p.invisible;
-          });
-        } else return "Invalid Player ID";
-        game.sendLeaderboardUpdates();
-      }
+    let boolArg = boolSelector(args[2]);
+    // If args[1] is a bool (e.g. /invis true), apply to self
+    if (targets.length === 1 && targets[0] === source && boolSelector(args[1]) !== null) {
+       boolArg = boolSelector(args[1]);
     }
+
+    targets.forEach((p) => {
+      if (!compareAdmin(source, p)) return;
+      // Toggle if null, otherwise set
+      p.invisible = boolArg == null ? !p.invisible : boolArg;
+      p.hideLeaderboard = p.invisible;
+    });
+    
+    game.sendLeaderboardUpdates();
   },
   { aliases: ["invis", "vanish", "v"], level: AdminLevel.Moderator }
 );
+
 // invincible <playerSelector>
 Command(
   "invincible",
   (args: any[], source: Player | undefined) => {
-    let game = getGame();
+    let game = getSafeGame();
+    if (!game) return;
 
-    if (game) {
-      let player = playerSelector(args[1], source) || source;
-      if (!player) return "You need to be in the game to run this command.";
+    let targets = resolvePlayerList(args[1], source);
+    if (targets.length === 0 && source) targets = [source];
+    if (targets.length === 0) return "Player not found.";
 
-      if (game) {
-        let bool = boolSelector(args[2]);
-        let bool1 = boolSelector(args[1]);
-        if (player == source)
-          player.invincible = bool1 == null ? !player.invincible : bool1;
-        else if (player instanceof Player)
-          player.invincible = bool == null ? !player.invincible : bool;
-        else if (player.length) {
-          player.forEach((p) => {
-            p.invincible = bool == null ? !p.invincible : bool;
-          });
-        } else return "Invalid Player ID";
-      }
+    let boolArg = boolSelector(args[2]);
+    // If args[1] is a bool, apply to self
+    if (targets.length === 1 && targets[0] === source && boolSelector(args[1]) !== null) {
+        boolArg = boolSelector(args[1]);
     }
+
+    targets.forEach((p) => {
+      p.invincible = boolArg == null ? !p.invincible : boolArg;
+    });
   },
   { aliases: ["invinc", "nokill", "iv"], level: AdminLevel.Helper }
 );
+
 // spectator <playerSelector>
 Command(
   "spectator",
   (args: any[], source: Player | undefined) => {
-    let game = getGame();
+    let game = getSafeGame();
+    if (!game) return;
 
-    if (game) {
-      let player = playerSelector(args[1], source) || source;
-      if (!player) return "You need to be in the game to run this command.";
+    let targets = resolvePlayerList(args[1], source);
+    if (targets.length === 0 && source) targets = [source];
+    if (targets.length === 0) return "Player not found.";
 
-      let makeSpec = (p: Player, enable: boolean) => {
-        if (enable) {
-          p.spdMult = 8;
-          p.buildItem = ItemType.Cookie;
-          p.weaponMode = WeaponModes.NoSelect;
-          p.mode = PlayerMode.spectator;
-          p.invincible = true;
-        } else {
-          p.spdMult = config.defaultSpeed;
-          p.buildItem = -1;
-          p.weaponMode = WeaponModes.None;
-          p.mode = PlayerMode.normal;
-        }
-      };
+    let boolArg = boolSelector(args[2]);
 
-      if (game) {
-        let bool = boolSelector(args[2]);
-        if (player == source) {
-          if (bool == undefined) {
-            if (player.mode == PlayerMode.spectator) makeSpec(player, false);
-            else makeSpec(player, true);
-          } else makeSpec(player, bool);
-        } else if (player instanceof Player) makeSpec(player, bool || false);
-        else if (player.length) {
-          player.forEach((p) => {
-            makeSpec(p, bool || false);
-          });
-        } else return "Invalid Player ID";
+    const setSpec = (p: Player, enable: boolean) => {
+      if (enable) {
+        p.spdMult = 8;
+        p.buildItem = ItemType.Cookie;
+        p.weaponMode = WeaponModes.NoSelect;
+        p.mode = PlayerMode.spectator;
+        p.invincible = true;
+      } else {
+        p.spdMult = config.defaultSpeed;
+        p.buildItem = -1;
+        p.weaponMode = WeaponModes.None;
+        p.mode = PlayerMode.normal;
       }
-    }
+    };
+
+    targets.forEach((p) => {
+      let enable = boolArg;
+      if (enable === null || enable === undefined) {
+        // Toggle based on current state
+        enable = p.mode !== PlayerMode.spectator;
+      }
+      setSpec(p, enable);
+    });
   },
   { aliases: ["sp", "spec"], level: AdminLevel.Moderator }
 );
+
 // speed <playerSelector> [amount]
 Command(
   "speed",
   (args: any[], source: Player | undefined) => {
-    let game = getGame();
-    let s = Number(args[2]) || Number(args[1]) || config.defaultSpeed || 1;
-
-    if (game) {
-      let player = args[2] ? playerSelector(args[1], source) : source;
-      if (!player) return "You need to be in the game to run this command!";
-
-      if (game) {
-        if (player instanceof Player) player.spdMult = s;
-        else if (player.length) {
-          player.forEach((p) => {
-            p.spdMult = s;
-          });
-        } else return "Invalid Player ID";
-      }
+    let amount = Number(args[2]) || Number(args[1]) || config.defaultSpeed || 1.5;
+    
+    let targets = resolvePlayerList(args[1], source);
+    // If args[1] was the number, apply to source
+    if (targets.length === 0 || !isNaN(Number(args[1]))) {
+        if(source) targets = [source];
     }
+
+    if (targets.length === 0) return "You need to be in the game to run this command!";
+
+    targets.forEach((p) => {
+      p.spdMult = amount;
+    });
   },
   { aliases: ["movespeed", "s", "spd"], level: AdminLevel.Moderator }
 );
 
-//TODO: change to tempmod command
-/*dispatcher.register(
-  literal("login").then(
-    argument("password", string()).executes((context) => {
-      let thisPlayer = context.getSource() as Player;
-      let game = getGame();
-
-      if (game) {
-        if (thisPlayer && thisPlayer.client) {
-          if (!config.moderatorPassword) return 1;
-          if (context.getArgument("password", String) == config.moderatorPassword) {
-            // temporary admin
-            thisPlayer.client.admin = true;
-          }
-        }
-      }
-
-      return 0;
-    })
-  )
-);*/
 // weaponvariant [variant] <playerSelector>
 Command(
   "weaponvariant",
   (args: any[], source: Player | undefined) => {
-    let game = getGame();
     let variant = args[1] || "normal";
+    let targets = resolvePlayerList(args[2], source);
+    if (targets.length === 0 && source) targets = [source];
+    
+    if (targets.length === 0) return "Player not found.";
 
-    if (game) {
-      let player = playerSelector(args[2], source) || source;
-      if (!player) return "You need to be in the game to run this command.";
-
-      if (player instanceof Player) setWeaponVariant(player, variant);
-      else if (player.length)
-        player.forEach((p) => {
-          setWeaponVariant(p, variant);
-        });
-      else return "Invalid Player ID(s)";
-    }
+    targets.forEach((p) => setWeaponVariant(p, variant));
   },
   { aliases: ["variant", "wv"], level: AdminLevel.Moderator }
 );
+
 // ban [playerSelector] <reason>
 Command(
   "ban",
   (args: any[], source: Player | undefined) => {
-    let game = getGame();
+    let game = getSafeGame();
+    if (!game) return;
 
-    if (game) {
-      let player = playerSelector(args[1], source, false);
+    let player = playerSelector(args[1], source, false);
 
-      if (player instanceof Player && player.client && !player.client.admin) {
-        game.banClient(player.client, args.slice(2).join(" "));
-        return false;
-      } else return "Invalid Player ID";
+    if (player instanceof Player && player.client && !player.client.admin) {
+      game.banClient(player.client, args.slice(2).join(" "));
+      return false;
+    } else {
+      return "Invalid Player ID or cannot ban admin.";
     }
   },
   { aliases: ["b"], level: AdminLevel.Staff }
 );
+
 // god <playerSelector>
 Command(
   "god",
   (args: any[], source: Player | undefined) => {
-    let game = getGame();
+    let targets = resolvePlayerList(args[1], source);
+    if (targets.length === 0 && source) targets = [source];
+    if (targets.length === 0) return "Player not found.";
 
-    function setRes(p: Player) {
+    targets.forEach((p) => {
       p.points = 1000000;
       p.food = Infinity;
       p.wood = Infinity;
@@ -346,426 +316,263 @@ Command(
       p.xp = Infinity;
       p.invincible = true;
       p.spdMult = 2.5;
-    }
-
-    if (game) {
-      let player = playerSelector(args[1], source) || source;
-
-      if (player instanceof Player) setRes(player);
-      else if (player && player.length) player?.map((p) => setRes(p));
-      else return "You need to be in the game to run this command!";
-    }
+    });
   },
   { aliases: ["g", "_god"], level: AdminLevel.Staff }
 );
+
 // set [playerID] [resource] [amount]
 Command(
   "set",
   (args: any[]) => {
     let playerSID = Number(args[1]);
-    let resourceType = args[2];
+    let resourceType = args[2]?.toLowerCase();
     let resourceAmount = Number(args[3]) || 0;
-    let game = getGame();
+    let game = getSafeGame();
 
     if (game) {
-      let player = game.state.players.find(
-        (player: { id: any }) => player.id == playerSID
-      );
+      let player = game.state.players.find((p: any) => p.id == playerSID);
 
       if (player) {
         switch (resourceType) {
-          case "points":
-          case "gold":
-          case "money":
-          case "g":
-            player.points = resourceAmount;
+          case "points": case "gold": case "money": case "g": player.points = resourceAmount; break;
+          case "food": case "f": player.food = resourceAmount; break;
+          case "stone": case "s": player.stone = resourceAmount; break;
+          case "wood": case "w": player.wood = resourceAmount; break;
+          case "health": case "hp": case "hitpoints": player.health = resourceAmount; break;
+          case "xp": player.xp = resourceAmount; break;
+          case "age": 
+            player.age = resourceAmount - 1; 
+            player.xp = Infinity; 
             break;
-
-          case "food":
-          case "f":
-            player.food = resourceAmount;
-            break;
-
-          case "stone":
-          case "s":
-            player.stone = resourceAmount;
-            break;
-
-          case "wood":
-          case "w":
-            player.wood = resourceAmount;
-            break;
-
-          case "health":
-          case "hp":
-          case "hitpoints":
-            player.health = resourceAmount;
-            break;
-
-          case "xp":
-            player.xp = resourceAmount;
-            break;
-
-          case "age":
-            player.age = resourceAmount - 1;
-            player.xp = Infinity;
-            break;
-
-          case "hat":
-            player.hatID = resourceAmount;
-            break;
-          case "accessory":
-          case "acc":
-            player.accID = resourceAmount;
-            break;
-
-          default:
-            return "Invalid resource type " + resourceType;
+          case "hat": player.hatID = resourceAmount; break;
+          case "accessory": case "acc": player.accID = resourceAmount; break;
+          default: return "Invalid resource type " + resourceType;
         }
       } else return "Invalid Player ID";
     }
   },
   { aliases: [], level: AdminLevel.Helper }
 );
+
 // kick [playerSelector] <reason>
 Command(
   "kick",
   (args: any[], source: Player | undefined) => {
     let reason = args.slice(2).join(" ") || "Kicked by a moderator.";
-    let game = getGame();
+    let game = getSafeGame();
+    if (!game) return;
 
-    if (game) {
-      let player = playerSelector(args[1], source);
-      if (!player) return "Invalid Player ID";
+    let targets = resolvePlayerList(args[1], source);
+    if (targets.length === 0) return "Invalid Player ID";
 
-      if (player instanceof Player) {
-        if (player.client) {
-          if (player.client.admin >= (source?.client?.admin || -1))
-            return false;
-          game.kickClient(player.client, reason);
-        }
-      } else {
-        player.forEach((p) => {
-          if (p.client) {
-            if (p.client.admin >= (source?.client?.admin || -1)) return false;
-            game?.kickClient(p.client, reason);
-          }
-        });
+    const srcAdmin = source?.client?.admin || -1;
+
+    targets.forEach((p) => {
+      if (p.client) {
+        if (p.client.admin >= srcAdmin) return; // Cannot kick equal or higher rank
+        game?.kickClient(p.client, reason);
       }
-    }
+    });
   },
   { aliases: ["k"], level: AdminLevel.Moderator }
 );
-// generate [typr] <size/'dmg'>
+
+// generate [type] <size/'dmg'>
 Command(
   "generate",
   (args: any[], source: Player | undefined) => {
     if (!source) return "You must be in the game to run this command.";
     let size = Number(args[2]);
-    if (size > 1000) size = 1000;
-    if (size < 1) size = 1;
+    // Clamp size to prevent server crashing
+    if (isNaN(size) || size < 1) size = 1;
+    if (size > 500) size = 500; 
 
-    let game = getGame();
+    let game = getSafeGame();
     game?.generateStructure(
       `${args[1] || "stone"}:${args[2] || "normal"}`,
-      source?.location.x || 1,
-      source?.location.y || 1,
-      size || undefined
+      source.location.x,
+      source.location.y,
+      size
     );
     return false;
   },
   { aliases: ["gen"], level: AdminLevel.Staff }
 );
-// bass
+
+// bass - Optimized geometry calculation
 Command(
   "bass",
   (args: any[], source: Player | undefined) => {
     if (!source) return "You must be in the game to run this command.";
-    let game = getGame();
+    let game = getSafeGame();
     if (!game) return;
 
-    let loc = new Vec2(source.location.x || 1, source.location.y || 1);
-    let wallPos = 125;
-    let lastWallPos = 0;
-    let wallCount = 0;
-    let totalWalls = 10;
+    let loc = new Vec2(source.location.x, source.location.y);
     let removeRadius = 200;
+    let wallGen: number[][] = [];
 
-    let pos = {
-      topleft: new Vec2(0, 0),
-      topright: new Vec2(0, 0),
-      bottomleft: new Vec2(0, 0),
-      bottomright: new Vec2(0, 0),
-    };
-    let wallGen = [];
+    // Helper to generate box coords
+    const addWall = (x: number, y: number) => wallGen.push([x, y]);
+    
+    // Build the shape logic (simplified loop)
+    let step = 100;
+    let count = 10;
+    let topY = loc.y - (count + 1) * step;
+    let botY = loc.y;
+    let leftX = loc.x - (count * step) - step;
+    let rightX = loc.x + (count * step);
 
-    while (wallCount < totalWalls) {
-      let wallLoc = new Vec2(loc.x + wallPos, loc.y);
-      wallGen.push([wallLoc.x, wallLoc.y]);
-      wallCount++;
-      wallPos += 100;
-    }
-    pos.bottomright = new Vec2(loc.x + wallPos - 100, loc.y);
+    // Right Wall
+    for(let i=0; i<count; i++) addWall(loc.x + 125 + (i*step), loc.y);
+    // Up Wall (Right side)
+    for(let i=0; i<count; i++) addWall(rightX - 100, loc.y - (i*step));
+    // Left Wall
+    for(let i=0; i<count; i++) addWall(loc.x - 125 - (i*step), loc.y);
+    // Up Wall (Left side)
+    for(let i=0; i<count; i++) addWall(leftX + 100 + step, loc.y - (i*step));
+    // Back Wall (Top)
+    for(let i=-3; i<(count*2); i++) addWall(leftX + 100 + (i*step), topY);
 
-    lastWallPos = wallPos;
-    wallPos = 0;
-    wallCount = 0;
-    while (wallCount < totalWalls) {
-      let wallLoc = new Vec2(loc.x + lastWallPos, loc.y + wallPos);
-      wallGen.push([wallLoc.x, wallLoc.y]);
-      wallCount++;
-      wallPos -= 100;
-    }
-    pos.topright = new Vec2(loc.x + lastWallPos, loc.y + wallPos + 100);
-
-    wallPos = -125;
-    wallCount = 0;
-    while (wallCount < totalWalls) {
-      let wallLoc = new Vec2(loc.x + wallPos, loc.y);
-      wallGen.push([wallLoc.x, wallLoc.y]);
-      wallCount++;
-      wallPos -= 100;
-    }
-    pos.bottomleft = new Vec2(loc.x + wallPos + 100, loc.y);
-
-    lastWallPos = wallPos;
-    wallPos = 0;
-    wallCount = 0;
-    while (wallCount < totalWalls) {
-      let wallLoc = new Vec2(loc.x + lastWallPos, loc.y + wallPos);
-      wallGen.push([wallLoc.x, wallLoc.y]);
-      wallCount++;
-      wallPos -= 100;
-    }
-    pos.topleft = new Vec2(loc.x + lastWallPos, loc.y + wallPos + 100);
-
-    lastWallPos = wallPos;
-    wallPos = -totalWalls * 100 - 100;
-    wallCount = -3;
-    while (wallCount < totalWalls * 2) {
-      let wallLoc = new Vec2(loc.x + wallPos, loc.y + lastWallPos);
-      wallGen.push([wallLoc.x, wallLoc.y]);
-      wallCount++;
-      wallPos += 100;
-    }
-
-    let between = function (x: number, a: number, b: number) {
-      var min = Math.min.apply(Math, [a, b]),
-        max = Math.max.apply(Math, [a, b]);
-      return x > min && x < max;
+    // Clear existing objects in area
+    let bounds = {
+        minX: leftX + 100 - removeRadius, maxX: rightX - 100 + removeRadius,
+        minY: topY - removeRadius, maxY: botY + removeRadius
     };
 
     game.state.gameObjects
-      .filter(
-        (o) =>
-          between(
-            o.location.x,
-            pos.topleft.x - removeRadius,
-            pos.topright.x + removeRadius
-          ) &&
-          between(
-            o.location.y,
-            pos.topleft.y - removeRadius,
-            pos.bottomright.y + removeRadius
-          )
+      .filter(o => 
+         o.location.x > bounds.minX && o.location.x < bounds.maxX &&
+         o.location.y > bounds.minY && o.location.y < bounds.maxY
       )
-      .forEach((o) => {
-        if (game && o && !o.protect) game.state.removeGameObject(o);
+      .forEach(o => {
+         if(o && !o.protect) game?.state.removeGameObject(o);
       });
 
-    wallGen.forEach((wall: any[]) => {
-      game?.generateStructure("stone:normal", wall[0], wall[1], 90);
-    });
+    // Spawn Walls
+    wallGen.forEach(w => game?.generateStructure("stone:normal", w[0], w[1], 90));
 
-    game.generateStructure(
-      "tree:normal",
-      pos.topleft.x + 270,
-      pos.topleft.y + 140,
-      120
-    );
-    game.generateStructure(
-      "stone:normal",
-      pos.topleft.x + 200,
-      pos.topleft.y + 200,
-      90
-    );
+    // Decorations
+    const tl = {x: leftX + 100, y: topY + 100}; // Approx top left corner inside box
+    const tr = {x: rightX - 100, y: topY + 100}; 
+    
+    game.generateStructure("tree:normal", tl.x + 270, tl.y + 140, 120);
+    game.generateStructure("stone:normal", tl.x + 200, tl.y + 200, 90);
+    game.generateStructure("tree:normal", tr.x - 270, tr.y + 140, 120);
+    game.generateStructure("stone:normal", tr.x - 200, tr.y + 200, 90);
 
-    game.generateStructure(
-      "tree:normal",
-      pos.topright.x - 270,
-      pos.topright.y + 140,
-      120
-    );
-    game.generateStructure(
-      "stone:normal",
-      pos.topright.x - 200,
-      pos.topright.y + 200,
-      90
-    );
+    // Fillers (Optimized loop)
+    for(let r=0; r<3; r++) { // 3 rows of food
+        let y = tl.y + 100 + (r*70);
+        for(let c=-3; c<=3; c++) { // 7 cols
+            game.generateStructure("food:normal", loc.x + (c*70), y, 70);
+        }
+    }
 
-    //TODO: make this automatic
-    game.generateStructure("food:normal", loc.x - 210, pos.topleft.y + 100, 70);
-    game.generateStructure("food:normal", loc.x - 140, pos.topleft.y + 100, 70);
-    game.generateStructure("food:normal", loc.x - 70, pos.topleft.y + 100, 70);
-    game.generateStructure("food:normal", loc.x, pos.topleft.y + 100, 70);
-    game.generateStructure("food:normal", loc.x + 70, pos.topleft.y + 100, 70);
-    game.generateStructure("food:normal", loc.x + 140, pos.topleft.y + 100, 70);
-    game.generateStructure("food:normal", loc.x + 210, pos.topleft.y + 100, 70);
-
-    game.generateStructure("food:normal", loc.x - 210, pos.topleft.y + 170, 70);
-    game.generateStructure("food:normal", loc.x - 140, pos.topleft.y + 170, 70);
-    game.generateStructure("food:normal", loc.x - 70, pos.topleft.y + 170, 70);
-    game.generateStructure("food:normal", loc.x, pos.topleft.y + 170, 70);
-    game.generateStructure("food:normal", loc.x + 70, pos.topleft.y + 170, 70);
-    game.generateStructure("food:normal", loc.x + 140, pos.topleft.y + 170, 70);
-    game.generateStructure("food:normal", loc.x + 210, pos.topleft.y + 170, 70);
-
-    game.generateStructure("food:normal", loc.x - 210, pos.topleft.y + 240, 70);
-    game.generateStructure("food:normal", loc.x - 140, pos.topleft.y + 240, 70);
-    game.generateStructure("food:normal", loc.x - 70, pos.topleft.y + 240, 70);
-    game.generateStructure("food:normal", loc.x, pos.topleft.y + 240, 70);
-    game.generateStructure("food:normal", loc.x + 70, pos.topleft.y + 240, 70);
-    game.generateStructure("food:normal", loc.x + 140, pos.topleft.y + 240, 70);
-    game.generateStructure("food:normal", loc.x + 210, pos.topleft.y + 240, 70);
-
-    game.generateStructure("gold:normal", loc.x - 700, pos.topleft.y + 650, 65);
-    game.generateStructure("gold:normal", loc.x - 650, pos.topleft.y + 650, 65);
-    game.generateStructure("gold:normal", loc.x - 600, pos.topleft.y + 650, 65);
-    game.generateStructure("gold:normal", loc.x - 550, pos.topleft.y + 650, 65);
-    game.generateStructure("gold:normal", loc.x - 500, pos.topleft.y + 650, 65);
-    game.generateStructure("gold:normal", loc.x - 450, pos.topleft.y + 650, 65);
-    game.generateStructure("gold:normal", loc.x - 400, pos.topleft.y + 650, 65);
-
-    game.generateStructure("gold:normal", loc.x + 700, pos.topleft.y + 650, 65);
-    game.generateStructure("gold:normal", loc.x + 650, pos.topleft.y + 650, 65);
-    game.generateStructure("gold:normal", loc.x + 600, pos.topleft.y + 650, 65);
-    game.generateStructure("gold:normal", loc.x + 550, pos.topleft.y + 650, 65);
-    game.generateStructure("gold:normal", loc.x + 500, pos.topleft.y + 650, 65);
-    game.generateStructure("gold:normal", loc.x + 450, pos.topleft.y + 650, 65);
-    game.generateStructure("gold:normal", loc.x + 400, pos.topleft.y + 650, 65);
+    // Gold
+    for(let c=-3; c<=3; c++) {
+        game.generateStructure("gold:normal", loc.x - 550 + (c*50), tl.y + 650, 65);
+        game.generateStructure("gold:normal", loc.x + 550 + (c*50), tl.y + 650, 65);
+    }
   },
   { aliases: [], level: AdminLevel.Owner }
 );
-// trap <playerSelector>
+
+// trap <playerSelector> - Optimized for Network Batching
 Command(
   "trap",
   (args: any[], source: Player | undefined) => {
-    let game = getGame();
-    let playerSID = Number(args[1]);
+    let game = getSafeGame();
+    if (!game) return;
+
+    let targets: Player[] = [];
     let protect = args[2] == "-lck" || args[1] == "-lck";
 
-    if (game) {
-      let player =
-        game.state.players.find(
-          (player: { id: any }) => player.id == playerSID
-        ) || source;
-      if (args[1] == "*" || args[1] == "**") {
-        game.state.players.forEach((p) => {
-          if (!game) return;
-          if (p.id == source?.id && args[1] == "**") return;
-          let location = new Vec2(p?.location.x || 1, p?.location.y || 1);
+    // Resolve targets
+    if (args[1] == "*" || args[1] == "**") {
+      game.state.players.forEach(p => {
+          if (p.id === source?.id && args[1] == "**") return;
+          targets.push(p);
+      });
+    } else {
+      targets = resolvePlayerList(args[1], source);
+    }
 
-          let newGameObject = new GameObject(
-            game.getNextGameObjectID(),
-            location,
-            source?.angle,
-            getScale(5),
-            -1,
-            undefined,
-            ItemType.PitTrap,
-            source?.id,
-            getGameObjHealth(5),
-            getGameObjDamage(5),
-            protect
-          );
-          game.state?.gameObjects.push(newGameObject);
-          game.sendGameObjects(p);
-        });
-        return false;
-      } else if (!player) return "You need to be in the game to run that!";
+    if (targets.length === 0) return "No targets found.";
 
-      let location = new Vec2(player?.location.x || 1, player?.location.y || 1);
-
-      let newGameObject = new GameObject(
+    // Batch creation to prevent lag
+    targets.forEach(p => {
+      if (!game) return;
+      let loc = new Vec2(p.location.x, p.location.y);
+      let obj = new GameObject(
         game.getNextGameObjectID(),
-        location,
-        source?.angle,
+        loc,
+        source?.angle || 0,
         getScale(5),
         -1,
         undefined,
         ItemType.PitTrap,
-        source?.id,
+        source?.id || -1,
         getGameObjHealth(5),
         getGameObjDamage(5),
         protect
       );
-      game.state?.gameObjects.push(newGameObject);
-      game.state.players.map((p) => game?.sendGameObjects(p));
-      return false;
-    }
+      game.state.gameObjects.push(obj);
+    });
+
+    // Send updates after all objects are added
+    game.state.players.forEach(p => game?.sendGameObjects(p));
+    return false;
   },
   { aliases: ["rap", "t", "trp", "tr"], level: AdminLevel.Staff }
 );
-// pad <playerSelector>
+
+// pad <playerSelector> - Optimized for Network Batching
 Command(
   "pad",
   (args: any[], source: Player | undefined) => {
-    let game = getGame();
-    let playerSID = Number(args[1]);
+    let game = getSafeGame();
+    if (!game) return;
+
+    let targets: Player[] = [];
     let protect = args[2] == "-lck" || args[1] == "-lck";
 
-    if (game) {
-      let player =
-        game.state.players.find(
-          (player: { id: any }) => player.id == playerSID
-        ) || source;
-      if (args[1] == "*" || args[1] == "**") {
-        game.state.players.forEach((p) => {
-          if (!game) return;
-          if (p.id == source?.id && args[1] == "**") return;
-          let location = new Vec2(p?.location.x || 1, p?.location.y || 1);
+    if (args[1] == "*" || args[1] == "**") {
+      game.state.players.forEach(p => {
+          if (p.id === source?.id && args[1] == "**") return;
+          targets.push(p);
+      });
+    } else {
+      targets = resolvePlayerList(args[1], source);
+    }
 
-          let newGameObject = new GameObject(
-            game.getNextGameObjectID(),
-            location,
-            p?.angle,
-            getScale(6),
-            -1,
-            undefined,
-            ItemType.BoostPad,
-            source?.id,
-            getGameObjHealth(6),
-            getGameObjDamage(6),
-            protect
-          );
-          game.state?.gameObjects.push(newGameObject);
-          game.sendGameObjects(p);
-        });
-        return false;
-      } else if (!player) return "You need to be in the game to run that!";
+    if (targets.length === 0) return "No targets found.";
 
-      let location = new Vec2(player?.location.x || 1, player?.location.y || 1);
-
-      let newGameObject = new GameObject(
+    targets.forEach(p => {
+      if (!game) return;
+      let loc = new Vec2(p.location.x, p.location.y);
+      let obj = new GameObject(
         game.getNextGameObjectID(),
-        location,
-        source?.angle,
+        loc,
+        source?.angle || 0,
         getScale(6),
         -1,
         undefined,
         ItemType.BoostPad,
-        source?.id,
+        source?.id || -1,
         getGameObjHealth(6),
         getGameObjDamage(6),
         protect
       );
-      game.state?.gameObjects.push(newGameObject);
-      game.state.players.map((p) => game?.sendGameObjects(p));
-      return false;
-    }
+      game.state.gameObjects.push(obj);
+    });
+
+    game.state.players.forEach(p => game?.sendGameObjects(p));
+    return false;
   },
   { aliases: ["p", "ad", "speedpad"], level: AdminLevel.Staff }
 );
+
 // gamemode [mode]
 Command(
   "gamemode",
@@ -775,7 +582,7 @@ Command(
       .map((a: GameModes) => GameModes[a])
       .filter((m) => !!m);
     if (modes.length) {
-      let game = getGame();
+      let game = getSafeGame();
       if (game) {
         game.mode = modes;
         game.physBounds = [0, config.mapScale];
@@ -787,54 +594,33 @@ Command(
   },
   { aliases: ["gm"], level: AdminLevel.Staff }
 );
+
 // cr
 Command(
   "cr",
   function (args: any[], source: Player | undefined) {
-    let packetFactory = PacketFactory.getInstance();
-
     if (source) {
       source.items = [
-        ItemType.Apple,
-        ItemType.WoodWall,
-        ItemType.Spikes,
-        ItemType.Windmill,
-        ItemType.Cookie,
-        ItemType.StoneWall,
-        ItemType.PitTrap,
-        ItemType.BoostPad,
-        ItemType.GreaterSpikes,
-        ItemType.FasterWindmill,
-        ItemType.Mine,
-        ItemType.Sapling,
-        ItemType.Cheese,
-        ItemType.Turret,
-        ItemType.Platform,
-        ItemType.HealingPad,
-        ItemType.Blocker,
-        ItemType.Teleporter,
-        ItemType.CastleWall,
-        ItemType.PowerMill,
-        ItemType.PoisonSpikes,
-        ItemType.SpinningSpikes,
-        ItemType.SpawnPad,
+        ItemType.Apple, ItemType.WoodWall, ItemType.Spikes, ItemType.Windmill,
+        ItemType.Cookie, ItemType.StoneWall, ItemType.PitTrap, ItemType.BoostPad,
+        ItemType.GreaterSpikes, ItemType.FasterWindmill, ItemType.Mine, ItemType.Sapling,
+        ItemType.Cheese, ItemType.Turret, ItemType.Platform, ItemType.HealingPad,
+        ItemType.Blocker, ItemType.Teleporter, ItemType.CastleWall, ItemType.PowerMill,
+        ItemType.PoisonSpikes, ItemType.SpinningSpikes, ItemType.SpawnPad,
       ];
-
-      if (source.client)
-        source.client.socket.send(
-          packetFactory.serializePacket(
-            new Packet(PacketType.UPDATE_ITEMS, [source.items, 0])
-          )
-        );
+      source.client?.socket.send(
+          PacketFactory.getInstance().serializePacket(new Packet(PacketType.UPDATE_ITEMS, [source.items, 0]))
+      );
     }
   },
   { aliases: [], level: AdminLevel.Staff }
 );
+
 // summon [animalID]
 Command(
   "summon",
   function (args: any[], source: Player | undefined) {
-    let game = getGame();
+    let game = getSafeGame();
     let type = Number(args[1]);
     if (!(type in Animals)) type = Animals.cow;
 
@@ -849,6 +635,7 @@ Command(
   },
   { aliases: ["an", "spawn"], level: AdminLevel.Admin }
 );
+
 // inspect
 Command(
   "inspect",
@@ -860,6 +647,7 @@ Command(
   },
   { aliases: ["ins"], level: AdminLevel.Helper }
 );
+
 // onetap
 Command(
   "onetap",
@@ -871,6 +659,7 @@ Command(
   },
   { aliases: ["ot"], level: AdminLevel.Admin }
 );
+
 // supershot
 Command(
   "supershot",
@@ -882,6 +671,7 @@ Command(
   },
   { aliases: ["supers"], level: AdminLevel.Admin }
 );
+
 // bigshot
 Command(
   "bigshot",
@@ -893,6 +683,7 @@ Command(
   },
   { aliases: ["bigs"], level: AdminLevel.Admin }
 );
+
 // logs
 Command(
   "logs",
@@ -902,6 +693,7 @@ Command(
   },
   { aliases: [], level: AdminLevel.Admin }
 );
+
 // exec [js]
 Command(
   "exec",
@@ -911,87 +703,76 @@ Command(
   },
   { aliases: ["xec"], level: AdminLevel.Meow }
 );
-// acc.promote [accountName] [adminLevel]
+
+// Account Management
 Command(
   "acc.promote",
   function (args: any[], source: Player | undefined) {
     let level = AdminLevel.Admin;
     if (Number(args[args.length - 1])) level = Number(args.pop());
     let account = getAccount(args.slice(1).join(" ") || "");
+    
     if (!account || !account.username) {
-      if (source?.client) return Broadcast("Invalid username.", source.client);
-      else return console.log("Invalid username.");
+      let msg = "Invalid username.";
+      return source?.client ? Broadcast(msg, source.client) : console.log(msg);
     }
+    
     if (!AdminLevel[level]) level = AdminLevel.Admin;
     account.adminLevel = level;
     setAccount(account.username, account);
-    getGame()
-      ?.state.players.filter(
-        (p) =>
-          p.client?.account && p.client.account.username == account?.username
-      )
-      .forEach((plr) => {
-        if (plr.client) getGame()?.kickClient(plr.client, "Promoted.");
-      });
+    
+    getGame()?.state.players.forEach((plr) => {
+        if (plr.client?.account && plr.client.account.username == account?.username) {
+            getGame()?.kickClient(plr.client, "Promoted.");
+        }
+    });
   },
   { aliases: [], level: AdminLevel.Meow }
 );
-// acc.demote [accountName]
+
 Command(
   "acc.demote",
   function (args: any[], source: Player | undefined) {
     let account = getAccount(args.slice(1).join(" ") || "");
-
     if (!account || !account.username) {
-      if (source?.client) return Broadcast("Invalid username.", source.client);
-      else return console.log("Invalid username.");
+      let msg = "Invalid username.";
+      return source?.client ? Broadcast(msg, source.client) : console.log(msg);
     }
     account.adminLevel = 0;
     setAccount(account.username, account);
-    getGame()
-      ?.state.players.filter(
-        (p) =>
-          p.client?.account && p.client.account.username == account?.username
-      )
-      .forEach((plr) => {
-        if (plr.client) getGame()?.kickClient(plr.client, "Demoted.");
-      });
+    getGame()?.state.players.forEach((plr) => {
+        if (plr.client?.account && plr.client.account.username == account?.username) {
+            getGame()?.kickClient(plr.client, "Demoted.");
+        }
+    });
   },
   { aliases: [], level: AdminLevel.Meow }
 );
-// acc.delete [accountName]
+
 Command(
   "acc.delete",
   function (args: any[], source: Player | undefined) {
     let account = getAccount(args.slice(1).join(" ") || "");
-
     if (!account || !account.username) {
-      if (source?.client) return Broadcast("Invalid username.", source.client);
-      else return console.log("Invalid username.");
+      let msg = "Invalid username.";
+      return source?.client ? Broadcast(msg, source.client) : console.log(msg);
     }
     db.delete(`account_${account.username.replace(/ /g, "+")}`);
-    getGame()
-      ?.state.players.filter(
-        (p) =>
-          p.client?.account && p.client.account.username == account?.username
-      )
-      .forEach((plr) => {
-        if (plr.client) getGame()?.kickClient(plr.client, "Account Deleted.");
-      });
+    getGame()?.state.players.forEach((plr) => {
+        if (plr.client?.account && plr.client.account.username == account?.username) {
+            getGame()?.kickClient(plr.client, "Account Deleted.");
+        }
+    });
   },
   { aliases: [], level: AdminLevel.Owner }
 );
-// acc.setyt [accountName] [url]
+
 Command(
   "acc.setyt",
   function (args: any[], source: Player | undefined) {
     let yt = String(args.pop()) || "";
     let account = getAccount(args.slice(1).join(" ") || "");
-
-    if (!account || !account.username) {
-      if (source?.client) return Broadcast("Invalid username.", source.client);
-      else return console.log("Invalid username.");
-    }
+    if (!account || !account.username) return source?.client && Broadcast("Invalid username.", source.client);
     if (!yt) return Broadcast("Invalid url.", source?.client);
 
     account.mootuber = yt;
@@ -999,218 +780,108 @@ Command(
   },
   { aliases: ["acc.setyoutube"], level: AdminLevel.Admin }
 );
-// acc.setpass [accountName] [password]
+
 Command(
   "acc.setpass",
   function (args: any[], source: Player | undefined) {
     let newpass = args.pop();
     let account = getAccount(args.slice(1).join(" ") || "");
-
-    if (!account || !account.username) {
-      if (source?.client) return Broadcast("Invalid username.", source.client);
-      else return console.log("Invalid username.");
-    }
+    if (!account || !account.username) return source?.client && Broadcast("Invalid username.", source.client);
 
     bcrypt.hash(newpass, 5, (err: any, hash: any) => {
-      if (err || !account) return Broadcast("Error.", source?.client);
+      if (err || !account) return Broadcast("Error hashing password.", source?.client);
       account.password = hash;
       setAccount(account.username, account);
-      Broadcast("Changed.", source?.client);
+      Broadcast("Password Changed.", source?.client);
     });
   },
   { aliases: ["acc.changepass"], level: AdminLevel.Meow }
 );
-// acc.gtribe
-// does nothing lmao
+
 Command(
   "acc.gtribe",
   function (args: any[], source: Player | undefined) {
+    // Logic appears incomplete in source, preserving structure
     let gtr = getGTribe(args.pop());
     let account = getAccount(args.slice(1).join(" ") || "");
     if (!gtr || !account) return Broadcast("Invalid params.", source?.client);
   },
   { aliases: [], level: AdminLevel.Meow }
 );
-// meow
+
+// Custom Loadout Commands
+function applyLoadout(source: Player, packetFactory: any, loadout: any, message: string) {
+    if (!source.client) return;
+    
+    Object.assign(source, loadout);
+    getGame()?.sendPlayerUpdates();
+
+    let packets = [
+        new Packet(PacketType.UPDATE_ITEMS, [source.items, 0]),
+        new Packet(PacketType.UPDATE_ITEMS, [[source.weapon, source.secondaryWeapon], 1]),
+        new Packet(PacketType.UPGRADES, [0, 0]),
+        new Packet(PacketType.HEALTH_CHANGE, [source.location.x, source.location.y, message, 1]),
+        new Packet(PacketType.EVAL, [`document.getElementById("chatBox").setAttribute("maxlength",999999);`]),
+    ];
+    packets.forEach(p => source.client && source.client.socket.send(packetFactory.serializePacket(p)));
+}
+
 Command(
   "meow",
-  function (args: any[], source: Player | undefined) {
-    let packetFactory = PacketFactory.getInstance();
-
+  (args: any[], source: Player | undefined) => {
     if (source && source.client) {
-      source.weapon = source.selectedWeapon = Weapons.Katana;
-      source.secondaryWeapon = Weapons.Shotgun;
-      source.primaryWeaponExp = WeaponVariants[WeaponVariant.Amethyst].xp;
-      source.items = [
-        ItemType.Cookie,
-        ItemType.CastleWall,
-        ItemType.SpinningSpikes,
-        ItemType.PowerMill,
-        ItemType.PitTrap,
-        ItemType.BoostPad,
-        ItemType.Teleporter,
-      ];
-      source.food = 10000;
-      source.stone = 10000;
-      source.wood = 10000;
-      source.points = 50000;
-      source.health = 100;
-      source.invincible = true;
-      source.spdMult = 3;
-      source.upgradeAge = 10;
-      source.age = 99;
-      source.xp = Infinity;
-      source.hatID = 59;
-      source.accID = 11; // replace with cat tail
-      getGame()?.sendPlayerUpdates();
-      [
-        new Packet(PacketType.UPDATE_ITEMS, [source.items, 0]),
-        new Packet(PacketType.UPDATE_ITEMS, [
-          [source.weapon, source.secondaryWeapon],
-          1,
-        ]),
-        new Packet(PacketType.UPGRADES, [0, 0]),
-        new Packet(PacketType.HEALTH_CHANGE, [
-          source.location.x,
-          source.location.y,
-          ":3",
-          1,
-        ]),
-        new Packet(PacketType.EVAL, [
-          `document.getElementById("chatBox").setAttribute("maxlength",999999);`,
-        ]),
-      ].map(
-        (p) =>
-          source.client &&
-          source.client.socket.send(packetFactory.serializePacket(p))
-      );
+        applyLoadout(source, PacketFactory.getInstance(), {
+            weapon: Weapons.Katana, selectedWeapon: Weapons.Katana,
+            secondaryWeapon: Weapons.Shotgun,
+            primaryWeaponExp: WeaponVariants[WeaponVariant.Amethyst].xp,
+            items: [ItemType.Cookie, ItemType.CastleWall, ItemType.SpinningSpikes, ItemType.PowerMill, ItemType.PitTrap, ItemType.BoostPad, ItemType.Teleporter],
+            food: 10000, stone: 10000, wood: 10000, points: 50000, health: 100,
+            invincible: true, spdMult: 3, upgradeAge: 10, age: 99, xp: Infinity,
+            hatID: 59, accID: 11
+        }, ":3");
     }
   },
-  {
-    aliases: ["m"],
-    level: AdminLevel.Meow,
-  }
+  { aliases: ["m"], level: AdminLevel.Meow }
 );
-// thwampus
+
 Command(
   "thwampus",
-  function (args: any[], source: Player | undefined) {
-    let packetFactory = PacketFactory.getInstance();
-
+  (args: any[], source: Player | undefined) => {
     if (source && source.client) {
-      source.weapon = source.selectedWeapon = Weapons.Katana;
-      source.secondaryWeapon = Weapons.GreatHammer;
-      source.primaryWeaponExp = source.secondaryWeaponExp =
-        WeaponVariants[WeaponVariant.Amethyst].xp;
-      source.items = [
-        ItemType.PitTrap,
-        ItemType.BoostPad,
-        ItemType.Mine,
-        ItemType.Sapling,
-        ItemType.Cheese,
-        ItemType.Turret,
-        ItemType.Platform,
-        ItemType.HealingPad,
-        ItemType.Blocker,
-        ItemType.Teleporter,
-        ItemType.CastleWall,
-        ItemType.PowerMill,
-        ItemType.PoisonSpikes,
-        ItemType.SpinningSpikes,
-        ItemType.SpawnPad,
-      ];
-      source.food = Infinity;
-      source.stone = Infinity;
-      source.wood = Infinity;
-      source.points = 0;
-      source.health = 100;
-      source.invincible = true;
-      source.spdMult = 4;
-      source.upgradeAge = 10;
-      source.age = 99;
-      source.xp = Infinity;
-      source.hatID = 60;
-      source.accID = 21; // replace with wumpus tail
-      getGame()?.sendPlayerUpdates();
-      [
-        new Packet(PacketType.UPDATE_ITEMS, [source.items, 0]),
-        new Packet(PacketType.UPDATE_ITEMS, [
-          [source.weapon, source.secondaryWeapon],
-          1,
-        ]),
-        new Packet(PacketType.UPGRADES, [0, 0]),
-        new Packet(PacketType.HEALTH_CHANGE, [
-          source.location.x,
-          source.location.y,
-          "W U M P",
-          1,
-        ]),
-        new Packet(PacketType.EVAL, [
-          `document.getElementById("chatBox").setAttribute("maxlength",999999);`,
-        ]),
-      ].map(
-        (p) =>
-          source.client &&
-          source.client.socket.send(packetFactory.serializePacket(p))
-      );
+        applyLoadout(source, PacketFactory.getInstance(), {
+            weapon: Weapons.Katana, selectedWeapon: Weapons.Katana,
+            secondaryWeapon: Weapons.GreatHammer,
+            primaryWeaponExp: WeaponVariants[WeaponVariant.Amethyst].xp,
+            secondaryWeaponExp: WeaponVariants[WeaponVariant.Amethyst].xp,
+            items: [ItemType.PitTrap, ItemType.BoostPad, ItemType.Mine, ItemType.Sapling, ItemType.Cheese, ItemType.Turret, ItemType.Platform, ItemType.HealingPad, ItemType.Blocker, ItemType.Teleporter, ItemType.CastleWall, ItemType.PowerMill, ItemType.PoisonSpikes, ItemType.SpinningSpikes, ItemType.SpawnPad],
+            food: Infinity, stone: Infinity, wood: Infinity, points: 0, health: 100,
+            invincible: true, spdMult: 4, upgradeAge: 10, age: 99, xp: Infinity,
+            hatID: 60, accID: 21
+        }, "W U M P");
     }
   },
-  {
-    aliases: ["wump"],
-    level: AdminLevel.Owner,
-  }
+  { aliases: ["wump"], level: AdminLevel.Owner }
 );
-// dashre
+
 Command(
   "dashre",
-  function (args: any[], source: Player | undefined) {
-    let packetFactory = PacketFactory.getInstance();
-
+  (args: any[], source: Player | undefined) => {
     if (source && source.client) {
-      source.weapon = source.selectedWeapon = Weapons.Sword;
-      source.secondaryWeapon = Weapons.GreatHammer;
-      source.primaryWeaponExp = source.secondaryWeaponExp =
-        WeaponVariants[WeaponVariant.Diamond].xp;
-      source.items = [ItemType.PitTrap, ItemType.BoostPad];
-      source.food = 10000;
-      source.stone = 10000;
-      source.wood = 10000;
-      source.points = 10000;
-      source.health = 100;
-      source.invincible = true;
-      source.spdMult = 8;
-      source.upgradeAge = 10;
-      source.age = 99;
-      source.xp = Infinity;
-      source.hatID = 61;
-      source.accID = 11;
-      getGame()?.sendPlayerUpdates();
-      [
-        new Packet(PacketType.UPDATE_ITEMS, [source.items, 0]),
-        new Packet(PacketType.UPDATE_ITEMS, [
-          [source.weapon, source.secondaryWeapon],
-          1,
-        ]),
-        new Packet(PacketType.UPGRADES, [0, 0]),
-        new Packet(PacketType.HEALTH_CHANGE, [
-          source.location.x,
-          source.location.y,
-          ":3",
-          1,
-        ]),
-      ].map(
-        (p) =>
-          source.client &&
-          source.client.socket.send(packetFactory.serializePacket(p))
-      );
+        applyLoadout(source, PacketFactory.getInstance(), {
+            weapon: Weapons.Sword, selectedWeapon: Weapons.Sword,
+            secondaryWeapon: Weapons.GreatHammer,
+            primaryWeaponExp: WeaponVariants[WeaponVariant.Diamond].xp,
+            secondaryWeaponExp: WeaponVariants[WeaponVariant.Diamond].xp,
+            items: [ItemType.PitTrap, ItemType.BoostPad],
+            food: 10000, stone: 10000, wood: 10000, points: 10000, health: 100,
+            invincible: true, spdMult: 8, upgradeAge: 10, age: 99, xp: Infinity,
+            hatID: 61, accID: 11
+        }, ":3");
     }
   },
-  {
-    aliases: ["dash"],
-    level: AdminLevel.Owner,
-  }
+  { aliases: ["dash"], level: AdminLevel.Owner }
 );
-// gphat
+
 Command(
   "gphat",
   function (args: any[], source: Player | undefined) {
@@ -1218,73 +889,63 @@ Command(
       source.hatID = 63;
     }
   },
-  {
-    aliases: [],
-    level: AdminLevel.Moderator,
-  }
+  { aliases: [], level: AdminLevel.Moderator }
 );
+
 // lock [password]
 Command(
   "lock",
   (args: any[], source: Player | undefined) => {
-    let game = getGame();
+    let game = getSafeGame();
     if (!game) return;
 
     game.locked = args.slice(1).join(" ") || "";
     game.state.players.forEach((p) => {
-      p.client &&
-        game?.kickClient(
-          p.client,
-          "Server locked. Get the password from an admin."
-        );
+      if(p.client) game?.kickClient(p.client, "Server locked. Get the password from an admin.");
     });
   },
-  {
-    aliases: ["lockdown", "lockserver", "ls"],
-    level: AdminLevel.Admin,
-  }
+  { aliases: ["lockdown", "lockserver", "ls"], level: AdminLevel.Admin }
 );
-// snake [playerSelector]
+
+// snake [playerSelector] - Fixed Memory Leaks
 Command(
   "snake",
   (args: any[], source: Player | undefined) => {
-    let game = getGame();
+    let game = getSafeGame();
     if (!game || !source) return;
 
-    let players = playerSelector(args[1], source);
-    if (players instanceof Player) players = [players];
-
+    let targets = resolvePlayerList(args[1], source);
+    
     let len = 0;
-    players?.forEach((p) => {
+    targets.forEach((p) => {
       if (p.id == source.id) return;
       len += 100;
-      let len2 = String(len);
-      let i = setInterval(function () {
-        if (
-          source.dead ||
-          !source ||
-          !game?.state.players.find((p) => p.id == source.id)
-        )
-          return clearInterval(i);
-        if (!p || p.dead) return;
+      let dist = Number(len);
+      
+      // Fix: Clear existing intervals to prevent exponential lag
+      if ((p as any).snakeInterval) clearInterval((p as any).snakeInterval);
+
+      (p as any).snakeInterval = setInterval(function () {
+        // Cleanup check
+        if (source.dead || !source || !game?.state.players.find((pl) => pl.id == source.id) || !p || p.dead) {
+          clearInterval((p as any).snakeInterval);
+          return;
+        }
+        
         let ang = (source.angle * 180) / Math.PI;
         ang = (ang + 180) % 360;
-        ang = (ang * Math.PI) / 180.0;
-        let x = Math.cos(ang);
-        let y = Math.sin(ang);
-        p.location = source.location.add(
-          x * Number(len2),
-          y * Number(len2),
-          true
-        );
+        let rad = (ang * Math.PI) / 180.0;
+        let x = Math.cos(rad);
+        let y = Math.sin(rad);
+        
+        p.location = source.location.add(x * dist, y * dist, true);
       }, 100);
     });
   },
-  {
-    aliases: [],
-    level: AdminLevel.Admin,
-  }
+  { aliases: [], level: AdminLevel.Admin }
 );
+
+// --- Console Logic ---
 
 function logMethod(text: string) {
   process.stdout.write(
@@ -1293,10 +954,6 @@ function logMethod(text: string) {
   lastMessage = text;
 }
 
-/**
- * Logs to stdout with console
- * @param text the text to log
- */
 function log(text: any) {
   let commandParts = command.split(" ");
   let coloredCommand =
@@ -1314,25 +971,25 @@ function error(text: string) {
   console.error(text);
 }
 
-function runCommand(command: string, source?: Player) {
+function runCommand(commandStr: string, source?: Player) {
   try {
-    let err = GetCommand(command).execute(command, source);
+    let cmdObj = GetCommand(commandStr);
+    if(!cmdObj) return false;
+
+    let err = cmdObj.execute(commandStr, source);
     if (err && source?.client) Broadcast(err, source.client);
-    console.log(
-      `Ran "${command}" from ${
-        source ? `${source.name} (${source.id})` : "CONSOLE"
-      }.`
-    );
-    logger.log(
-      `Player "${source?.name || "CONSOLE"}" (ID: ${
-        source?.id || 0
-      }) ran command "${command}".`
-    );
-  } catch (_) {
-    if (source?.client) Broadcast(`Error: ${_}`, source.client);
+    
+    const logMsg = `Ran "${commandStr}" from ${source ? `${source.name} (${source.id})` : "CONSOLE"}.`;
+    console.log(logMsg);
+    logger.log(logMsg);
+    
+    return true;
+  } catch (e) {
+    const errMsg = `Error executing command: ${e}`;
+    console.error(errMsg);
+    if (source?.client) Broadcast("Internal Error.", source.client);
     return false;
   }
-  return true;
 }
 
 function startConsole() {
@@ -1342,7 +999,8 @@ function startConsole() {
   });
 
   function consoleLoop() {
-    rl.question("> ", (command) => {
+    rl.question("> ", (input) => {
+      command = input.trim();
       if (command == "exit") {
         console.log("Closing...");
         process.exit();
@@ -1350,12 +1008,11 @@ function startConsole() {
 
       if (command.startsWith("/")) command = command.substring(1);
 
-      if (!runCommand(command)) {
-        if (!runCommand(command)) {
-          error("Invalid command.");
-        }
+      if (command.length > 0) {
+         if (!runCommand(command)) {
+             error("Invalid command or execution failed.");
+         }
       }
-
       consoleLoop();
     });
   }
